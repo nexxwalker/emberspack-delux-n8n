@@ -65,11 +65,15 @@ import {
 } from './src/models.js';
 import { parseWhen, describe, valid as validWhen, untilText } from './src/when.js';
 import { createAccounts } from './accounts.mjs';
+import { openStore } from './store.mjs';
 
 const cfg = loadConfig();
 const HTML = path.join(ROOT, 'dist', 'command-centre-v2.html'); // built by build.mjs; shipped so npm start works without a build
 const DATA = path.join(ROOT, 'data');
-const accountRoutes = createAccounts({ directory: process.env.DELUX_ACCOUNT_DIR || path.join(DATA, 'members') });
+const ACCOUNT_DIR = process.env.DELUX_ACCOUNT_DIR || path.join(DATA, 'members');
+const accounts = await openStore({ directory: ACCOUNT_DIR });
+if (accounts.mode === 'mongo') console.log(`accounts: MongoDB · ${accounts.database}`);
+const accountRoutes = createAccounts({ directory: ACCOUNT_DIR, store: accounts });
 const FILE = path.join(DATA, 'tasks.json');
 const BRAIN = cfg.brainPath;
 const NOTES_DIR = path.join(BRAIN, 'Agents Office');

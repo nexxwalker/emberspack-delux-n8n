@@ -137,19 +137,23 @@ Everything is optional: the office runs with none of them, using
 Copy `.env.example` to `.env` (git-ignored) — nothing loads `.env` for you, so
 export it into your shell: `set -a; . ./.env; set +a`.
 
-| Variable              | Used by                     | Meaning                                                                                    |
-| --------------------- | --------------------------- | ------------------------------------------------------------------------------------------ |
-| `ANTHROPIC_API_KEY`   | `serve.mjs`, `setup`        | Run against the Claude API instead of the `claude` CLI login.                              |
-| `PORT`                | `config.mjs`                | Listen port. Overrides `port` in `office.config.json`. Default `4520`.                     |
-| `AO_NAME`             | `config.mjs`                | Overrides the company `name`.                                                              |
-| `AO_BRAIN`            | `config.mjs`, `build.mjs`   | Overrides the brain folder. The release build forces `./brain`.                            |
-| `AO_MODEL`            | `config.mjs`                | Overrides the office default model (`sonnet`, `opus`, `fable`).                            |
-| `DELUX_PUBLIC_ORIGIN` | `serve.mjs`, `accounts.mjs` | Exact public origin behind a trusted HTTPS proxy; enforces that origin and Secure cookies. |
-| `DELUX_ACCOUNT_DIR`   | `serve.mjs`                 | Alternative private directory for account storage (default `./data/members`).              |
-| `DELUX_OPENAI_URL`    | `accounts.mjs`              | OpenAI base URL for credential verification. Test against trusted endpoints only.          |
-| `DELUX_WHATSAPP_URL`  | `accounts.mjs`              | Meta Graph base URL for credential verification. Test against trusted endpoints only.      |
-| `CHECK_LIVE`          | `check.mjs`                 | `1` makes `npm run check` perform real Claude runs.                                        |
-| `RELEASE_REPOSITORY`  | `scripts/release.mjs`       | `owner/repository` — required to push a release.                                           |
+| Variable                  | Used by                     | Meaning                                                                                    |
+| ------------------------- | --------------------------- | ------------------------------------------------------------------------------------------ |
+| `ANTHROPIC_API_KEY`       | `serve.mjs`, `setup`        | Run against the Claude API instead of the `claude` CLI login.                              |
+| `PORT`                    | `config.mjs`                | Listen port. Overrides `port` in `office.config.json`. Default `4520`.                     |
+| `AO_NAME`                 | `config.mjs`                | Overrides the company `name`.                                                              |
+| `AO_BRAIN`                | `config.mjs`, `build.mjs`   | Overrides the brain folder. The release build forces `./brain`.                            |
+| `AO_MODEL`                | `config.mjs`                | Overrides the office default model (`sonnet`, `opus`, `fable`).                            |
+| `DELUX_PUBLIC_ORIGIN`     | `serve.mjs`, `accounts.mjs` | Exact public origin behind a trusted HTTPS proxy; enforces that origin and Secure cookies. |
+| `DELUX_ACCOUNT_DIR`       | `serve.mjs`                 | Alternative private directory for account storage (default `./data/members`).              |
+| `DELUX_MONGODB_URI`       | `store.mjs`                 | MongoDB connection string. Unset: accounts stay in the local JSON file.                    |
+| `DELUX_MONGODB_DB`        | `store.mjs`                 | Database name inside that cluster (default `delux_crew`).                                  |
+| `DELUX_PROVIDER_KEY`      | `accounts.mjs`              | 32-byte hex key for stored provider credentials. Required with MongoDB.                    |
+| `DELUX_PROVIDER_KEY_FILE` | `accounts.mjs`              | Path to a 32-byte key file, instead of `DELUX_PROVIDER_KEY`.                               |
+| `DELUX_OPENAI_URL`        | `accounts.mjs`              | OpenAI base URL for credential verification. Test against trusted endpoints only.          |
+| `DELUX_WHATSAPP_URL`      | `accounts.mjs`              | Meta Graph base URL for credential verification. Test against trusted endpoints only.      |
+| `CHECK_LIVE`              | `check.mjs`                 | `1` makes `npm run check` perform real Claude runs.                                        |
+| `RELEASE_REPOSITORY`      | `scripts/release.mjs`       | `owner/repository` — required to push a release.                                           |
 
 Never put a value in `.env.example`, in `office.config.json`, or in any file git
 can see. `.env`, `data/` (which holds `provider.key`, the AES-256-GCM key for
@@ -164,13 +168,17 @@ At `/settings`, update your name and workspace, save OpenAI and WhatsApp Busines
 
 Appearance settings offer four presets and custom accent/background colors with automatic text contrast. Save your choice to apply it on later visits and to the 3D office interface. The scene’s department colors remain functional labels. In the office, OpenAI, WhatsApp, Workspace and Settings sit at the top center beside Chrome. A dashed agent connection map follows camera/agent movement, previews unconfigured connections, reflects verified access, and highlights actual matching tool events. Provider status refreshes every 15 seconds and when the office regains focus; the map itself does not run provider requests.
 
-Account data, password hashes, workflow history and sessions live in `data/members/accounts.json`. Back up the entire `data/members/` directory, including `provider.key`; losing this key makes stored provider credentials unreadable. Passwords use salted scrypt hashes, sessions use HttpOnly cookies and expire after seven days. Email verification and password recovery are not implemented. This JSON store supports one server process on a local filesystem; do not run multiple instances against it.
+Account data, password hashes, workflow history and sessions live in `data/members/accounts.json` — or in MongoDB when `DELUX_MONGODB_URI` is set. The database store keeps one document per member in `users` (so two people saving at once cannot overwrite each other), sessions in `sessions` with a TTL index that drops them when they expire, and a unique index on email that settles a signup race the file store could only check for. Passwords use salted scrypt hashes, sessions use HttpOnly cookies and expire after seven days. Email verification and password recovery are not implemented.
+
+The file store supports one server process on a local filesystem; do not run multiple instances against it. MongoDB lifts that limit, though the sign-in rate limiter is still per process. Either way the encryption key stays out of the data: `provider.key` is never uploaded to the cluster, and with MongoDB you supply it as `DELUX_PROVIDER_KEY` or `DELUX_PROVIDER_KEY_FILE` — losing it makes stored provider credentials unreadable. Back up whatever holds it. To move existing members across, run `node scripts/mongo-import.mjs` once with `DELUX_MONGODB_URI` set; it adds missing emails and live sessions and leaves the file untouched.
 
 This remains a **trusted local installation**: the existing office, Brain, Claude tools and `/api/tasks` endpoints are shared installation resources, outside the personal workflow board. Member signup does not protect those legacy APIs. Do not expose the installation directly to the public internet. If accessed through a trusted HTTPS proxy, set `DELUX_PUBLIC_ORIGIN` to its exact public origin to enforce that origin and Secure session cookies; the proxy must provide access control for the shared office APIs.
 
 Optional server configuration:
 
 - `DELUX_ACCOUNT_DIR`: an alternative private account storage directory.
+- `DELUX_MONGODB_URI` / `DELUX_MONGODB_DB`: use MongoDB instead of the JSON file.
+- `DELUX_PROVIDER_KEY` / `DELUX_PROVIDER_KEY_FILE`: the credential encryption key, 64 hex characters or a 32-byte key file. Required with MongoDB.
 - `DELUX_PUBLIC_ORIGIN`: the trusted public origin, for example `https://workspace.example.com`.
 - `DELUX_OPENAI_URL` / `DELUX_WHATSAPP_URL`: operator-controlled API base URLs for testing. Defaults are OpenAI v1 and Meta Graph v25.0. Credentials are sent to these destinations; use only trusted endpoints.
 

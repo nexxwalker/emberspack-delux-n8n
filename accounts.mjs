@@ -11,6 +11,7 @@ import {
   createDecipheriv,
 } from 'node:crypto';
 import { promisify } from 'node:util';
+import { createFileStore } from './store.mjs';
 const derive = promisify(scrypt);
 const TTL = 7 * 24 * 60 * 60 * 1000;
 const departments = ['marketing', 'emails', 'sales', 'ops', 'fin', 'delivery'];
@@ -62,31 +63,46 @@ const send = (res, status, value) => {
   res.end(JSON.stringify(value));
 };
 
-export function createAccounts({
-  directory,
-  fetchImpl = fetch,
-  openaiURL = process.env.DELUX_OPENAI_URL || 'https://api.openai.com/v1',
-  whatsappURL = process.env.DELUX_WHATSAPP_URL || 'https://graph.facebook.com/v25.0',
-  publicOrigin = process.env.DELUX_PUBLIC_ORIGIN || '',
-}) {
-  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const file = path.join(directory, 'accounts.json');
-  const keyFile = path.join(directory, 'provider.key');
-  // A missing key alongside existing data must never silently replace the encryption key.
+// The provider key decrypts stored credentials, so it never travels to the database with them.
+function providerKey(store) {
+  const hex = (process.env.DELUX_PROVIDER_KEY || '').trim();
+  if (hex) {
+    if (!/^[0-9a-f]{64}$/i.test(hex))
+      throw new Error('DELUX_PROVIDER_KEY must be 32 bytes written as 64 hexadecimal characters.');
+    return Buffer.from(hex, 'hex');
+  }
+  const keyFile =
+    process.env.DELUX_PROVIDER_KEY_FILE || (store.directory ? path.join(store.directory, 'provider.key') : '');
+  if (!keyFile)
+    throw new Error(
+      'Set DELUX_PROVIDER_KEY (64 hex characters) or DELUX_PROVIDER_KEY_FILE to read stored credentials.',
+    );
   if (!fs.existsSync(keyFile)) {
-    if (fs.existsSync(file))
+    if (store.mode !== 'file')
+      throw new Error(
+        'Set DELUX_PROVIDER_KEY or DELUX_PROVIDER_KEY_FILE: a newly generated key would make the credentials already stored in MongoDB unreadable.',
+      );
+    // A missing key alongside existing data must never silently replace the encryption key.
+    if (fs.existsSync(path.join(store.directory, 'accounts.json')))
       throw new Error('Missing provider encryption key. Restore provider.key from the same backup as accounts.json.');
     fs.writeFileSync(keyFile, randomBytes(32), { mode: 0o600, flag: 'wx' });
   }
   const key = fs.readFileSync(keyFile);
   if (key.length !== 32) throw new Error('Invalid provider encryption key.');
-  const read = () => (fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : { users: [], sessions: [] });
-  const write = (data) => {
-    data.sessions = data.sessions.filter((s) => s.expires > Date.now());
-    const temp = file + '.' + randomUUID() + '.tmp';
-    fs.writeFileSync(temp, JSON.stringify(data), { mode: 0o600 });
-    fs.renameSync(temp, file);
-  };
+  return key;
+}
+
+export function createAccounts({
+  directory,
+  store = createFileStore({ directory }),
+  fetchImpl = fetch,
+  openaiURL = process.env.DELUX_OPENAI_URL || 'https://api.openai.com/v1',
+  whatsappURL = process.env.DELUX_WHATSAPP_URL || 'https://graph.facebook.com/v25.0',
+  publicOrigin = process.env.DELUX_PUBLIC_ORIGIN || '',
+}) {
+  const key = providerKey(store);
+  const read = () => store.read();
+  const write = (data) => store.write(data);
   function encrypt(value) {
     const iv = randomBytes(12);
     const cipher = createCipheriv('aes-256-gcm', key, iv);
@@ -144,12 +160,12 @@ export function createAccounts({
       `delux_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAge}${secure ? '; Secure' : ''}`,
     );
   }
-  function session(req, res, data, user) {
+  async function session(req, res, data, user) {
     const token = randomBytes(32).toString('hex');
     const previous = tokenOf(req);
     data.sessions = data.sessions.filter((s) => s.token !== hash(previous));
     data.sessions.push({ user: user.id, token: hash(token), expires: Date.now() + TTL });
-    write(data);
+    await write(data);
     cookie(req, res, token, TTL / 1000);
   }
   const limits = new Map();
@@ -224,7 +240,7 @@ export function createAccounts({
             workspace = field(b.workspace, 'workspace name', 80);
           const salt = randomBytes(16).toString('hex');
           const derived = await derive(password, salt, 64);
-          const data = read();
+          const data = await read();
           if (data.users.some((u) => u.email === email))
             fail(409, 'An account already uses this email. Sign in instead.');
           const user = {
@@ -242,18 +258,24 @@ export function createAccounts({
           };
           activity(user, 'Workspace created');
           data.users.push(user);
-          session(req, res, data, user);
+          try {
+            await session(req, res, data, user);
+          } catch (e) {
+            // The database's unique email index is the last word on a signup race.
+            if (e?.code === 11000) fail(409, 'An account already uses this email. Sign in instead.');
+            throw e;
+          }
           send(res, 201, { user: publicUser(user) });
           return true;
         }
-        const data = read(),
-          user = data.users.find((u) => u.email === email);
+        const data = await read();
+        const user = data.users.find((u) => u.email === email);
         const derived = await derive(password, user?.salt || 'delux-invalid-account', 64);
         if (!user || !timingSafeEqual(derived, Buffer.from(user.password, 'hex')))
           fail(401, 'Email or password is incorrect.');
         // Reload after the async password check so another request's changes cannot be lost.
-        const latest = read();
-        session(
+        const latest = await read();
+        await session(
           req,
           res,
           latest,
@@ -262,8 +284,8 @@ export function createAccounts({
         send(res, 200, { user: publicUser(latest.users.find((u) => u.id === user.id)) });
         return true;
       }
-      const data = read(),
-        user = current(req, data);
+      const data = await read();
+      const user = current(req, data);
       if (!user) fail(401, 'Sign in to your workspace.');
       if (route === 'me' && req.method === 'GET') {
         send(res, 200, { user: publicUser(user) });
@@ -271,7 +293,7 @@ export function createAccounts({
       }
       if (route === 'logout' && req.method === 'POST') {
         data.sessions = data.sessions.filter((s) => s.token !== hash(tokenOf(req)));
-        write(data);
+        await write(data);
         cookie(req, res, '', 0);
         send(res, 200, { ok: true });
         return true;
@@ -280,19 +302,19 @@ export function createAccounts({
         const b = await readBody(req);
         const name = field(b.name, 'name', 80),
           workspace = field(b.workspace, 'workspace name', 80);
-        const latest = read();
+        const latest = await read();
         const u = latest.users.find((u) => u.id === user.id);
         Object.assign(u, { name, workspace });
-        write(latest);
+        await write(latest);
         send(res, 200, { user: publicUser(u) });
         return true;
       }
       if (route === 'theme' && req.method === 'PATCH') {
         const colors = theme(await readBody(req));
-        const latest = read(),
+        const latest = await read(),
           u = latest.users.find((u) => u.id === user.id);
         u.theme = colors;
-        write(latest);
+        await write(latest);
         send(res, 200, { user: publicUser(u) });
         return true;
       }
@@ -320,7 +342,7 @@ export function createAccounts({
               new Date(due).toISOString().slice(0, 10) !== due))
         )
           fail(400, 'Choose a valid due date.');
-        const latest = read(),
+        const latest = await read(),
           u = latest.users.find((u) => u.id === user.id);
         let workflow = workflowId && u.workflows.find((w) => w.id === workflowId);
         if (workflowId && !workflow) fail(404, 'Workflow not found.');
@@ -340,7 +362,7 @@ export function createAccounts({
           updatedAt: new Date().toISOString(),
         });
         activity(u, `${isNew ? 'Created' : 'Updated'} “${title}” · ${b.stage}`);
-        write(latest);
+        await write(latest);
         send(res, isNew ? 201 : 200, { workflow });
         return true;
       }
@@ -349,7 +371,7 @@ export function createAccounts({
         if (!workflow) fail(404, 'Workflow not found.');
         user.workflows = user.workflows.filter((w) => w.id !== workflowId);
         activity(user, `Deleted “${workflow.title}”`);
-        write(data);
+        await write(data);
         send(res, 200, { ok: true });
         return true;
       }
@@ -359,7 +381,7 @@ export function createAccounts({
         if (req.method === 'DELETE' && !providerMatch[2]) {
           delete user.providers[id];
           activity(user, `Disconnected ${id}`);
-          write(data);
+          await write(data);
           send(res, 200, { user: publicUser(user) });
           return true;
         }
@@ -370,7 +392,7 @@ export function createAccounts({
           const phoneId = id === 'whatsapp' ? field(b.phoneId, 'business phone number ID', 40) : '';
           if (id === 'whatsapp' && !/^\d+$/.test(phoneId))
             fail(400, 'The WhatsApp phone number ID must contain digits only.');
-          const latest = read(),
+          const latest = await read(),
             u = latest.users.find((u) => u.id === user.id);
           u.providers[id] = {
             secret: encrypt(secret),
@@ -380,7 +402,7 @@ export function createAccounts({
             detail: 'Saved. Verify access to check this connection.',
           };
           activity(u, `Configured ${id}`);
-          write(latest);
+          await write(latest);
           send(res, 200, { user: publicUser(u) });
           return true;
         }
@@ -389,12 +411,12 @@ export function createAccounts({
           const saved = user.providers[id];
           if (!saved) fail(400, 'Save credentials first.');
           const result = await verify(id, saved);
-          const latest = read(),
+          const latest = await read(),
             u = latest.users.find((u) => u.id === user.id);
           if (!u.providers[id] || u.providers[id].secret !== saved.secret)
             fail(409, 'Settings changed during verification. Verify again.');
           Object.assign(u.providers[id], result, { checkedAt: new Date().toISOString() });
-          write(latest);
+          await write(latest);
           send(res, 200, { user: publicUser(u) });
           return true;
         }
