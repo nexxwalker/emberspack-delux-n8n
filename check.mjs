@@ -737,6 +737,44 @@ else {
       });
     }
     const page = await browser.newPage({ viewport: { width: 1512, height: 900 } });
+    // TEMP DIAGNOSTICS — debug branch only, removed before merge.
+    await page.addInitScript(() => {
+      window.__keys = [];
+      window.addEventListener(
+        'keydown',
+        (e) => {
+          const t = e.target || {};
+          window.__keys.push(e.key + '@' + (t.tagName || '?') + '#' + (t.id || '') + '.' + (t.className || ''));
+          if (window.__keys.length > 30) window.__keys.shift();
+        },
+        true,
+      );
+    });
+    const diag = async (label) =>
+      console.log(
+        'DIAG ' +
+          label +
+          ' ' +
+          JSON.stringify(
+            await page.evaluate(() => {
+              const a = document.activeElement || {};
+              return {
+                active: (a.tagName || '?') + '#' + (a.id || '') + '.' + (a.className || ''),
+                calOpen: !!document.getElementById('calOv')?.classList.contains('on'),
+                panelShown: document.getElementById('topSettings')?.hidden === false,
+                chips: [...document.querySelectorAll('.tp-chip')]
+                  .filter((c) => c.classList.contains('on'))
+                  .map((c) => c.dataset.f || c.textContent.trim()),
+                rows: document.querySelectorAll('.tp-row').length,
+                tasks: (window.CC?.tasks?.tasks || [])
+                  .map((t) => t.state + '/' + t.dept + '/' + String(t.title).slice(0, 20))
+                  .slice(0, 6),
+                routines: (window.CC?.routines?.() || []).map((r) => r.title + '|' + JSON.stringify(r.when)),
+                keys: (window.__keys || []).slice(-6),
+              };
+            }),
+          ),
+      );
     const errors = [];
     page.on('pageerror', (e) => errors.push(e.message));
     page.on('console', (m) => {
@@ -772,6 +810,7 @@ else {
       await page.fill('.tp-in', 'cut a 15 second teaser from the demo reel');
       await page.keyboard.press('Enter');
       await page.waitForTimeout(600);
+      await diag('bar');
       const hint = await page.evaluate(() => document.querySelector('.tp-hint').textContent);
       if (!/Added/.test(hint)) throw new Error('hint: ' + hint);
       const row = await page.evaluate(() =>
@@ -791,6 +830,7 @@ else {
       if (!/Team · SALES LEAD/.test(pre)) throw new Error('hint before Add: ' + pre);
       await page.keyboard.press('Enter');
       await page.waitForTimeout(700);
+      await diag('team');
       const hint = await page.evaluate(() => document.querySelector('.tp-hint').textContent);
       if (!/Added — SALES LEAD has it with/.test(hint)) throw new Error('hint: ' + hint);
       const n = await page.evaluate(() => ({
@@ -933,6 +973,7 @@ else {
         if (cells !== 35 && cells !== 42) throw new Error('month cells: ' + cells);
         if (!(await page.$('.cv-day.today'))) throw new Error('no today cell');
         const rt = await page.$$eval('.cv-ev.routine', (e) => e.length);
+        await diag('calendar');
         if (rt < 3) throw new Error('routine occurrences on the grid: ' + rt);
         const rail = await page.$eval('#cvRtN', (e) => +e.textContent);
         if (rail < 1) throw new Error('rail empty');
@@ -1001,6 +1042,7 @@ else {
       },
     );
     await step('smoke: department focus opens the chat rail', async () => {
+      await diag('before-1');
       await page.keyboard.press('1');
       await page.waitForTimeout(1800);
       const cls = await page.evaluate(() => document.getElementById('rail').className);
@@ -1011,6 +1053,7 @@ else {
       await page.waitForTimeout(1200);
     });
     await step('smoke: B opens and closes the company board', async () => {
+      await diag('before-b');
       await page.keyboard.press('b');
       await page.waitForTimeout(700);
       if (!(await page.evaluate(() => window.CC.tasks.isOpen()))) throw new Error('board did not open');
@@ -1019,6 +1062,7 @@ else {
       if (await page.evaluate(() => window.CC.tasks.isOpen())) throw new Error('board did not close');
     });
     await step('smoke: G opens the Brain graph with notes', async () => {
+      await diag('before-g');
       await page.keyboard.press('g');
       await page.waitForTimeout(700);
       if (!(await page.evaluate(() => window.CC.brain.isOpen()))) throw new Error('graph did not open');
