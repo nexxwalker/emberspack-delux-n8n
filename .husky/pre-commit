@@ -1,0 +1,23 @@
+# Delux crew — pre-commit gate.
+# Runs automatically on every `git commit` (installed by `npm run prepare` / husky).
+#
+#  1. formatting — the tree must be Prettier-clean. If it is not, this rewrites
+#     the offending files, tells you, and refuses the commit so you can review
+#     the reformat and stage it deliberately (nothing is auto-staged for you).
+#  2. lint — ESLint must exit clean. Errors block the commit; warnings do not.
+#
+# Tests (`npm test`) and the full build loop (`npm run check`) are the CI gate;
+# they are too slow to run on every local commit.
+if ! npx --no-install prettier --check .; then
+  npx --no-install prettier --write .
+  echo ""
+  echo "Prettier reformatted files in your working tree."
+  echo "Review the diff, 'git add' the changes, and commit again."
+  exit 1
+fi
+
+if ! npx --no-install eslint .; then
+  echo ""
+  echo "ESLint reported errors. Fix them (npm run lint:fix) and commit again."
+  exit 1
+fi

@@ -1,0 +1,11 @@
+{
+  "name": "view-image-mcp",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "description": "MCP tool that fetches an image URL and returns it as a base64 image block for Claude vision",
+  "main": "index.mjs",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4"
+  }
+}

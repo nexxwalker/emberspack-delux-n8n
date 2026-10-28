@@ -1,0 +1,18 @@
+node_modules/
+dist/
+data/
+brain/
+assets/
+coverage/
+package-lock.json
+.vercel/
+.wrangler/
+# Generated HTML bundles and the sample brain are machine-maintained.
+*.woff2
+*.png
+*.jpg
+
+# Generated sources — rebuilt by `node build.mjs` / `assets/mcp/bake.py`.
+# `check.mjs` asserts on their exact bytes, so formatting them is a false red.
+src/mcplogos.js
+src/braingraph.js

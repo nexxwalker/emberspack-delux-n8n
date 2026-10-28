@@ -1,0 +1,41 @@
+{
+  "name": "delux-crew",
+  "version": "3.2.1-beta.2",
+  "description": "Delux crew v3 (Beta) — a 3D isometric office where AI agents do real work on your own Claude login",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node serve.mjs",
+    "build": "node build.mjs",
+    "check": "node check.mjs",
+    "check:live": "CHECK_LIVE=1 node check.mjs",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "prepare": "husky",
+    "graph": "node graph-build.mjs",
+    "test": "node --test accounts.test.mjs theme.test.mjs",
+    "build:vercel": "node scripts/build-vercel.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "d3-force": "^3.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "esbuild": "^0.28.1",
+    "eslint": "^10.13.0",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^17.13.0",
+    "husky": "^9.1.7",
+    "playwright-core": "^1.62.0",
+    "prettier": "^3.9.10",
+    "three": "^0.185.1"
+  },
+  "optionalDependencies": {
+    "@anthropic-ai/sdk": "^0.80.0"
+  }
+}

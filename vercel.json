@@ -1,0 +1,15 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "buildCommand": "npm run build:vercel",
+  "outputDirectory": "dist/vercel",
+  "rewrites": [
+    { "source": "/luxury", "destination": "/index.html" },
+    { "source": "/signup", "destination": "/index.html" },
+    { "source": "/login", "destination": "/index.html" },
+    { "source": "/workspace", "destination": "/index.html" },
+    { "source": "/settings", "destination": "/index.html" },
+    { "source": "/office", "destination": "/command-centre-v2.html" },
+    { "source": "/dark", "destination": "/dark.html" }
+  ]
+}
