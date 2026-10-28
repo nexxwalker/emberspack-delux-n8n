@@ -25,6 +25,7 @@ import { P, rnd, ri } from './v1data.js';
 import { applyTasks, PROFILE, titleCase } from './profile.js';
 import { parseWhen, describe, nextRun, fromPicker, untilText } from './when.js';
 import { initCalendar } from './calendar.js'; // V3.2.1 (16 Sep 2026): the calendar on P
+import { readJson } from './http.js';
 import {
   MODEL_KEYS,
   MODELS,
@@ -1046,8 +1047,7 @@ export function initTasks(ctx) {
             team: team || undefined,
           }),
         });
-        if (!r.ok) throw new Error((await r.json()).error || r.statusText);
-        const st = await r.json();
+        const st = await readJson(r);
         const t = mk({
           agent: st.agent,
           title: st.title,
@@ -1190,8 +1190,7 @@ export function initTasks(ctx) {
             effort: effortSend(),
           }),
         });
-        const j = await r.json();
-        if (!r.ok) throw new Error(j.error || r.statusText);
+        const j = await readJson(r);
         setRoutines([...routines.filter((x) => x.id !== j.routine.id), j.routine]);
         const a = agentOf(j.routine.agent);
         say(
@@ -1314,7 +1313,7 @@ export function initTasks(ctx) {
   }
   const post = (p, b) =>
     fetch(API + p, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b || {}) })
-      .then((r) => r.json())
+      .then(readJson)
       .catch((e) => {
         console.warn('office:', e.message);
         return null;
@@ -1673,8 +1672,7 @@ export function initTasks(ctx) {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(feedback ? { feedback } : {}),
       });
-      if (!r.ok) throw new Error((await r.json()).error || r.statusText);
-      const st = await r.json();
+      const st = await readJson(r);
       t.result = st.result;
       t.error = !!st.error;
       t.read = st.read || [];
@@ -1715,7 +1713,7 @@ export function initTasks(ctx) {
   async function connect() {
     if (!location.protocol.startsWith('http')) return;
     try {
-      const h = await (await fetch(API + '/health')).json();
+      const h = await readJson(await fetch(API + '/health'));
       if (!h.ok) return;
       live = true;
       setOfficeModel(h.model);
@@ -2279,8 +2277,7 @@ export function initTasks(ctx) {
             team: asTeam(text) || undefined,
           }),
         });
-        const st = await r.json();
-        if (!r.ok) throw new Error(st.error || r.statusText);
+        const st = await readJson(r);
         const t = mk({
           agent: st.agent,
           title: st.title,
@@ -2342,8 +2339,7 @@ export function initTasks(ctx) {
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ dept: k, text, when, needsOk, model: normModel(model) || undefined }),
         });
-        const j = await r.json();
-        if (!r.ok) throw new Error(j.error || r.statusText);
+        const j = await readJson(r);
         setRoutines([...routines.filter((x) => x.id !== j.routine.id), j.routine]);
         const a = agentOf(j.routine.agent);
         spawnEmote(R[a.id], '⏱');

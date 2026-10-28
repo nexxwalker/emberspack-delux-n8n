@@ -30,6 +30,7 @@ import { initHero, HERO } from './hero.js';
 import { initContact } from './contact.js';
 import { initMember } from './member.js';
 import { initTopbar } from './topbar.js';
+import { readJson } from './http.js';
 initContact();
 const member = initMember({ THREE });
 initTopbar(); // glass header: profile sheet, hex nav, header search
@@ -1072,10 +1073,7 @@ function sendChat(text) {
             history: chatHist[id].filter((m) => m.who === 'user' || m.who === 'agent').slice(-8),
           }),
         })
-          .then(async (res) => {
-            if (!res.ok) throw new Error((await res.json()).error || res.statusText);
-            return res.json();
-          })
+          .then((res) => readJson(res))
           .then((j) => {
             const h = chatHist[id];
             const k = h.findIndex((m) => m.who === 'work' && m.text === `${r.a.name} is thinking`);

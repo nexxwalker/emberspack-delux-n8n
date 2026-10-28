@@ -1,4 +1,5 @@
 import { applyTheme, defaultTheme } from './theme.js';
+import { readJson } from './http.js';
 
 // The glass control layer above the office: the profile sheet (every setting
 // this system can actually write), the hex nav, and the header search.
@@ -57,9 +58,7 @@ export function initTopbar() {
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     if (res.status === 401) return null;
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || 'That did not save.');
-    return data;
+    return readJson(res, 'That did not save.');
   }
 
   async function load() {

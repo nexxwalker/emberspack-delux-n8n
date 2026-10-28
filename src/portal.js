@@ -1,5 +1,6 @@
 import logo from '../assets/ember-spark.png';
 import { applyTheme, defaultTheme } from './theme.js';
+import { readJson } from './http.js';
 const app = document.querySelector('#app');
 const esc = (value) =>
   String(value ?? '').replace(
@@ -32,13 +33,7 @@ async function api(route, method = 'GET', body) {
     headers: { 'Content-Type': 'application/json', 'X-Delux-Request': '1' },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-  const data = await res.json();
-  if (!res.ok) {
-    const err = new Error(data.error || 'Unable to complete the request.');
-    err.status = res.status;
-    throw err;
-  }
-  return data;
+  return readJson(res, 'Unable to complete the request.');
 }
 function setUser(value) {
   user = value;
