@@ -737,51 +737,6 @@ else {
       });
     }
     const page = await browser.newPage({ viewport: { width: 1512, height: 900 } });
-    // TEMP DIAGNOSTICS — debug branch only, removed before merge.
-    await page.addInitScript(() => {
-      window.__keys = [];
-      window.addEventListener(
-        'keydown',
-        (e) => {
-          const t = e.target || {};
-          window.__keys.push(e.key + '@' + (t.tagName || '?') + '#' + (t.id || '') + '.' + (t.className || ''));
-          if (window.__keys.length > 30) window.__keys.shift();
-        },
-        true,
-      );
-    });
-    const diag = async (label) =>
-      console.log(
-        'DIAG ' +
-          label +
-          ' ' +
-          JSON.stringify(
-            await page.evaluate(() => {
-              const a = document.activeElement || {};
-              return {
-                active: (a.tagName || '?') + '#' + (a.id || '') + '.' + (a.className || ''),
-                calOpen: !!document.getElementById('calOv')?.classList.contains('on'),
-                panelShown: document.getElementById('topSettings')?.hidden === false,
-                chips: [...document.querySelectorAll('.tp-chip')]
-                  .filter((c) => c.classList.contains('on'))
-                  .map((c) => c.dataset.f || c.textContent.trim()),
-                scope: document.querySelector('.tp-scope')?.textContent || '',
-                rows: document.querySelectorAll('.tp-row').length,
-                rowTitles: [...document.querySelectorAll('.tp-row .tp-t')]
-                  .slice(0, 3)
-                  .map((e) => e.textContent.trim().slice(0, 40)),
-                teaserRows: [...document.querySelectorAll('.tp-row .tp-t')].filter((e) => /teaser/i.test(e.textContent))
-                  .length,
-                teamRows: document.querySelectorAll('.tp-row.piece').length,
-                tasksTail: (window.CC?.tasks?.tasks || [])
-                  .slice(-3)
-                  .map((t) => t.state + '/' + t.dept + '/' + String(t.title).slice(0, 26)),
-                routines: (window.CC?.routines?.() || []).map((r) => r.title + '|' + JSON.stringify(r.when)),
-                keys: (window.__keys || []).slice(-6),
-              };
-            }),
-          ),
-      );
     const errors = [];
     page.on('pageerror', (e) => errors.push(e.message));
     page.on('console', (m) => {
@@ -816,14 +771,20 @@ else {
       await page.click('.tp-menu button[data-k="marketing"]');
       await page.fill('.tp-in', 'cut a 15 second teaser from the demo reel');
       await page.keyboard.press('Enter');
-      await page.waitForTimeout(600);
-      await diag('bar');
+      // Poll for the row itself rather than sampling once after a fixed delay:
+      // the office paints the new task on its next tick, and a slow machine
+      // outran the old 600 ms (the row was there 2 s later).
+      const row = await page
+        .waitForFunction(
+          () => [...document.querySelectorAll('.tp-row .tp-t')].some((e) => /teaser/i.test(e.textContent)),
+          null,
+          { timeout: 8000 },
+        )
+        .then(() => true)
+        .catch(() => false);
+      if (!row) throw new Error('row not in the feed');
       const hint = await page.evaluate(() => document.querySelector('.tp-hint').textContent);
       if (!/Added/.test(hint)) throw new Error('hint: ' + hint);
-      const row = await page.evaluate(() =>
-        [...document.querySelectorAll('.tp-row .tp-t')].some((e) => /teaser/i.test(e.textContent)),
-      );
-      if (!row) throw new Error('row not in the feed');
       return hint.trim().slice(0, 60);
     });
     await step('smoke: TEAM in the bar → the lead + piece cards on the desks (demo)', async () => {
@@ -836,10 +797,20 @@ else {
       const pre = await page.evaluate(() => document.querySelector('.tp-hint').textContent);
       if (!/Team · SALES LEAD/.test(pre)) throw new Error('hint before Add: ' + pre);
       await page.keyboard.press('Enter');
-      await page.waitForTimeout(700);
-      await diag('team');
-      const hint = await page.evaluate(() => document.querySelector('.tp-hint').textContent);
+      // The bar's line and the lead's piece cards land a tick apart on a slow
+      // machine: poll for both instead of sampling once at 700 ms.
+      const hint = await page
+        .waitForFunction(
+          () => /Added — SALES LEAD has it with/.test(document.querySelector('.tp-hint').textContent),
+          null,
+          { timeout: 6000 },
+        )
+        .then(() => page.evaluate(() => document.querySelector('.tp-hint').textContent))
+        .catch(() => page.evaluate(() => document.querySelector('.tp-hint').textContent));
       if (!/Added — SALES LEAD has it with/.test(hint)) throw new Error('hint: ' + hint);
+      await page
+        .waitForFunction(() => document.querySelectorAll('.tp-row.piece').length >= 2, null, { timeout: 6000 })
+        .catch(() => {});
       const n = await page.evaluate(() => ({
         lead: [...document.querySelectorAll('.tp-row .tp-t')].filter((e) =>
           /⚑ As a team, plan the spring/.test(e.textContent),
@@ -979,10 +950,10 @@ else {
         const cells = await page.$$eval('.cv-day', (e) => e.length);
         if (cells !== 35 && cells !== 42) throw new Error('month cells: ' + cells);
         if (!(await page.$('.cv-day.today'))) throw new Error('no today cell');
-        await diag('calendar');
-        // The exact days, not a raw count: a weekday routine has only two runs
-        // left if today is the 28th, so `rt >= 3` used to fail at every month
-        // end. Compare the grid against the weekdays the grid itself contains.
+        // The exact days, not a raw count. A weekday routine has only two runs
+        // left when today is the 28th, so `rt >= 3` failed at every month end —
+        // and the step threw before closing the calendar, which then swallowed
+        // the hotkey steps that follow it.
         const rtDays = await page.$$eval('.cv-ev.routine', (els) => els.map((e) => e.closest('.cv-day').dataset.day));
         const cellDays = await page.$$eval('.cv-day', (els) => els.map((e) => e.dataset.day));
         const todayIdx = cellDays.indexOf(await page.$eval('.cv-day.today', (e) => e.dataset.day));
@@ -1062,7 +1033,6 @@ else {
       },
     );
     await step('smoke: department focus opens the chat rail', async () => {
-      await diag('before-1');
       await page.keyboard.press('1');
       await page.waitForTimeout(1800);
       const cls = await page.evaluate(() => document.getElementById('rail').className);
@@ -1073,7 +1043,6 @@ else {
       await page.waitForTimeout(1200);
     });
     await step('smoke: B opens and closes the company board', async () => {
-      await diag('before-b');
       await page.keyboard.press('b');
       await page.waitForTimeout(700);
       if (!(await page.evaluate(() => window.CC.tasks.isOpen()))) throw new Error('board did not open');
@@ -1082,7 +1051,6 @@ else {
       if (await page.evaluate(() => window.CC.tasks.isOpen())) throw new Error('board did not close');
     });
     await step('smoke: G opens the Brain graph with notes', async () => {
-      await diag('before-g');
       await page.keyboard.press('g');
       await page.waitForTimeout(700);
       if (!(await page.evaluate(() => window.CC.brain.isOpen()))) throw new Error('graph did not open');
