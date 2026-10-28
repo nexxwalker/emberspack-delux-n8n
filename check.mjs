@@ -765,10 +765,17 @@ else {
                 chips: [...document.querySelectorAll('.tp-chip')]
                   .filter((c) => c.classList.contains('on'))
                   .map((c) => c.dataset.f || c.textContent.trim()),
+                scope: document.querySelector('.tp-scope')?.textContent || '',
                 rows: document.querySelectorAll('.tp-row').length,
-                tasks: (window.CC?.tasks?.tasks || [])
-                  .map((t) => t.state + '/' + t.dept + '/' + String(t.title).slice(0, 20))
-                  .slice(0, 6),
+                rowTitles: [...document.querySelectorAll('.tp-row .tp-t')]
+                  .slice(0, 3)
+                  .map((e) => e.textContent.trim().slice(0, 40)),
+                teaserRows: [...document.querySelectorAll('.tp-row .tp-t')].filter((e) => /teaser/i.test(e.textContent))
+                  .length,
+                teamRows: document.querySelectorAll('.tp-row.piece').length,
+                tasksTail: (window.CC?.tasks?.tasks || [])
+                  .slice(-3)
+                  .map((t) => t.state + '/' + t.dept + '/' + String(t.title).slice(0, 26)),
                 routines: (window.CC?.routines?.() || []).map((r) => r.title + '|' + JSON.stringify(r.when)),
                 keys: (window.__keys || []).slice(-6),
               };
@@ -972,9 +979,22 @@ else {
         const cells = await page.$$eval('.cv-day', (e) => e.length);
         if (cells !== 35 && cells !== 42) throw new Error('month cells: ' + cells);
         if (!(await page.$('.cv-day.today'))) throw new Error('no today cell');
-        const rt = await page.$$eval('.cv-ev.routine', (e) => e.length);
         await diag('calendar');
-        if (rt < 3) throw new Error('routine occurrences on the grid: ' + rt);
+        // The exact days, not a raw count: a weekday routine has only two runs
+        // left if today is the 28th, so `rt >= 3` used to fail at every month
+        // end. Compare the grid against the weekdays the grid itself contains.
+        const rtDays = await page.$$eval('.cv-ev.routine', (els) => els.map((e) => e.closest('.cv-day').dataset.day));
+        const cellDays = await page.$$eval('.cv-day', (els) => els.map((e) => e.dataset.day));
+        const todayIdx = cellDays.indexOf(await page.$eval('.cv-day.today', (e) => e.dataset.day));
+        const todayWd = new Date().getDay();
+        const wantDays = cellDays
+          .map((d, i) => ({ d, off: i - todayIdx }))
+          .filter(({ off }) => off > 0 && [1, 2, 3, 4, 5].includes((todayWd + off) % 7))
+          .map(({ d }) => d);
+        const gotDays = [...new Set(rtDays)].sort();
+        if (JSON.stringify(gotDays) !== JSON.stringify(wantDays))
+          throw new Error(`routine days ${gotDays.join(' ')} ≠ weekdays left in the grid ${wantDays.join(' ')}`);
+        const rt = rtDays.length;
         const rail = await page.$eval('#cvRtN', (e) => +e.textContent);
         if (rail < 1) throw new Error('rail empty');
         // a task for a day next week (the second day after today on the grid)
