@@ -771,13 +771,20 @@ else {
       await page.click('.tp-menu button[data-k="marketing"]');
       await page.fill('.tp-in', 'cut a 15 second teaser from the demo reel');
       await page.keyboard.press('Enter');
-      await page.waitForTimeout(600);
+      // Poll for the row itself rather than sampling once after a fixed delay:
+      // the office paints the new task on its next tick, and a slow machine
+      // outran the old 600 ms (the row was there 2 s later).
+      const row = await page
+        .waitForFunction(
+          () => [...document.querySelectorAll('.tp-row .tp-t')].some((e) => /teaser/i.test(e.textContent)),
+          null,
+          { timeout: 8000 },
+        )
+        .then(() => true)
+        .catch(() => false);
+      if (!row) throw new Error('row not in the feed');
       const hint = await page.evaluate(() => document.querySelector('.tp-hint').textContent);
       if (!/Added/.test(hint)) throw new Error('hint: ' + hint);
-      const row = await page.evaluate(() =>
-        [...document.querySelectorAll('.tp-row .tp-t')].some((e) => /teaser/i.test(e.textContent)),
-      );
-      if (!row) throw new Error('row not in the feed');
       return hint.trim().slice(0, 60);
     });
     await step('smoke: TEAM in the bar → the lead + piece cards on the desks (demo)', async () => {
@@ -790,9 +797,20 @@ else {
       const pre = await page.evaluate(() => document.querySelector('.tp-hint').textContent);
       if (!/Team · SALES LEAD/.test(pre)) throw new Error('hint before Add: ' + pre);
       await page.keyboard.press('Enter');
-      await page.waitForTimeout(700);
-      const hint = await page.evaluate(() => document.querySelector('.tp-hint').textContent);
+      // The bar's line and the lead's piece cards land a tick apart on a slow
+      // machine: poll for both instead of sampling once at 700 ms.
+      const hint = await page
+        .waitForFunction(
+          () => /Added — SALES LEAD has it with/.test(document.querySelector('.tp-hint').textContent),
+          null,
+          { timeout: 6000 },
+        )
+        .then(() => page.evaluate(() => document.querySelector('.tp-hint').textContent))
+        .catch(() => page.evaluate(() => document.querySelector('.tp-hint').textContent));
       if (!/Added — SALES LEAD has it with/.test(hint)) throw new Error('hint: ' + hint);
+      await page
+        .waitForFunction(() => document.querySelectorAll('.tp-row.piece').length >= 2, null, { timeout: 6000 })
+        .catch(() => {});
       const n = await page.evaluate(() => ({
         lead: [...document.querySelectorAll('.tp-row .tp-t')].filter((e) =>
           /⚑ As a team, plan the spring/.test(e.textContent),
@@ -932,8 +950,22 @@ else {
         const cells = await page.$$eval('.cv-day', (e) => e.length);
         if (cells !== 35 && cells !== 42) throw new Error('month cells: ' + cells);
         if (!(await page.$('.cv-day.today'))) throw new Error('no today cell');
-        const rt = await page.$$eval('.cv-ev.routine', (e) => e.length);
-        if (rt < 3) throw new Error('routine occurrences on the grid: ' + rt);
+        // The exact days, not a raw count. A weekday routine has only two runs
+        // left when today is the 28th, so `rt >= 3` failed at every month end —
+        // and the step threw before closing the calendar, which then swallowed
+        // the hotkey steps that follow it.
+        const rtDays = await page.$$eval('.cv-ev.routine', (els) => els.map((e) => e.closest('.cv-day').dataset.day));
+        const cellDays = await page.$$eval('.cv-day', (els) => els.map((e) => e.dataset.day));
+        const todayIdx = cellDays.indexOf(await page.$eval('.cv-day.today', (e) => e.dataset.day));
+        const todayWd = new Date().getDay();
+        const wantDays = cellDays
+          .map((d, i) => ({ d, off: i - todayIdx }))
+          .filter(({ off }) => off > 0 && [1, 2, 3, 4, 5].includes((todayWd + off) % 7))
+          .map(({ d }) => d);
+        const gotDays = [...new Set(rtDays)].sort();
+        if (JSON.stringify(gotDays) !== JSON.stringify(wantDays))
+          throw new Error(`routine days ${gotDays.join(' ')} ≠ weekdays left in the grid ${wantDays.join(' ')}`);
+        const rt = rtDays.length;
         const rail = await page.$eval('#cvRtN', (e) => +e.textContent);
         if (rail < 1) throw new Error('rail empty');
         // a task for a day next week (the second day after today on the grid)
