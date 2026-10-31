@@ -294,3 +294,41 @@ test('missing encryption key with existing data fails closed', async (t) => {
   fs.unlinkSync(path.join(f.directory, 'provider.key'));
   assert.throws(() => f.reload(), /Missing provider encryption key/);
 });
+
+test('every workflow action is recorded and read back, scoped to its account', async (t) => {
+  const f = await fixture(t);
+  const first = await f.signup('first@example.test');
+  const second = await f.signup('second@example.test');
+  const created = await f.request('workflows', { method: 'POST', cookie: first.cookie, body: draft });
+  const id = created.data.workflow.id;
+  await f.request(`workflows/${id}`, { method: 'PATCH', cookie: first.cookie, body: { ...draft, stage: 'review' } });
+  await f.request(`workflows/${id}`, { method: 'DELETE', cookie: first.cookie });
+  const posted = await f.request('actions', {
+    method: 'POST',
+    cookie: first.cookie,
+    body: { type: 'office.opened', detail: 'Opened the 3D office', data: { desk: 'ops' } },
+  });
+  assert.equal(posted.status, 201);
+  assert.equal(posted.data.action.type, 'office.opened');
+  const log = await f.request('actions?limit=10', { cookie: first.cookie });
+  assert.deepEqual(
+    log.data.actions.map((a) => a.type),
+    ['office.opened', 'workflow.deleted', 'workflow.updated', 'workflow.created', 'account.created'],
+  );
+  assert.equal(log.data.actions[0].data.desk, 'ops');
+  assert.equal((await f.request('actions', { cookie: second.cookie })).data.actions[0].type, 'account.created');
+  assert.equal((await f.request('actions?limit=1', { cookie: first.cookie })).data.actions.length, 1);
+  f.reload();
+  assert.equal((await f.request('actions', { cookie: first.cookie })).data.actions[0].type, 'office.opened');
+  assert.ok(!fs.readFileSync(path.join(f.directory, 'actions.jsonl'), 'utf8').includes('local-test-password'));
+});
+
+test('actions require a signed-in account and a valid type', async (t) => {
+  const f = await fixture(t);
+  const { cookie } = await f.signup();
+  assert.equal((await f.request('actions', { method: 'POST', body: { type: 'any' } })).status, 401);
+  assert.equal((await f.request('actions', { method: 'POST', cookie, body: {} })).status, 400);
+  assert.equal((await f.request('actions', { method: 'POST', cookie, body: { type: 'x'.repeat(61) } })).status, 400);
+  assert.equal((await f.request('actions')).status, 401);
+  assert.equal((await f.request('actions', { method: 'POST', cookie, body: { type: 'office.closed' } })).status, 201);
+});

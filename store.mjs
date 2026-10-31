@@ -27,6 +27,7 @@ export function createFileStore({ directory }) {
   if (!directory) throw new Error('A directory is required for file account storage.');
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   const file = path.join(directory, 'accounts.json');
+  const actionsFile = path.join(directory, 'actions.jsonl');
   return {
     mode: 'file',
     directory,
@@ -39,6 +40,30 @@ export function createFileStore({ directory }) {
       const temp = `${file}.${randomUUID()}.tmp`;
       fs.writeFileSync(temp, JSON.stringify(data), { mode: 0o600 });
       fs.renameSync(temp, file);
+    },
+    async appendAction(entry) {
+      fs.appendFileSync(actionsFile, JSON.stringify(entry) + '\n', { mode: 0o600 });
+      // Keep the log bounded without losing recent history.
+      if (fs.statSync(actionsFile).size > 1024 * 1024) {
+        const kept = fs.readFileSync(actionsFile, 'utf8').split('\n').filter(Boolean).slice(-2000);
+        fs.writeFileSync(actionsFile, kept.join('\n') + '\n', { mode: 0o600 });
+      }
+    },
+    async readActions(user, limit = 50) {
+      if (!fs.existsSync(actionsFile)) return [];
+      const entries = [];
+      const lines = fs.readFileSync(actionsFile, 'utf8').split('\n');
+      // Newest is last in the file, so walk backwards and stop once the page is full.
+      for (let i = lines.length - 1; i >= 0 && entries.length < limit; i--) {
+        if (!lines[i]) continue;
+        try {
+          const entry = JSON.parse(lines[i]);
+          if (entry.user === user) entries.push(entry);
+        } catch {
+          // A half-written line from a crash is skipped rather than breaking the page.
+        }
+      }
+      return entries;
     },
     async close() {},
   };
@@ -62,11 +87,13 @@ export async function createMongoStore({ uri, database = 'delux_crew' }) {
   const db = client.db(database);
   const users = db.collection('users');
   const sessions = db.collection('sessions');
+  const actions = db.collection('actions');
   // The database enforces the rules the JSON file had to check by hand.
   await Promise.all([
     users.createIndex({ email: 1 }, { unique: true }),
     sessions.createIndex({ user: 1 }),
     sessions.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
+    actions.createIndex({ user: 1, at: -1 }),
   ]);
   let snapshot = new Map();
   return {
@@ -114,6 +141,13 @@ export async function createMongoStore({ uri, database = 'delux_crew' }) {
       if (goneSessions.length) work.push(sessions.deleteMany({ _id: { $in: goneSessions } }));
       if (work.length) await Promise.all(work);
       snapshot = next;
+    },
+    async appendAction(entry) {
+      await actions.insertOne({ ...entry, _id: entry.id });
+    },
+    async readActions(user, limit = 50) {
+      const docs = await actions.find({ user }).sort({ at: -1 }).limit(limit).toArray();
+      return docs.map(plain);
     },
     async close() {
       await client.close();

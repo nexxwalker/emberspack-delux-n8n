@@ -182,6 +182,10 @@ Optional server configuration:
 - `DELUX_PUBLIC_ORIGIN`: the trusted public origin, for example `https://workspace.example.com`.
 - `DELUX_OPENAI_URL` / `DELUX_WHATSAPP_URL`: operator-controlled API base URLs for testing. Defaults are OpenAI v1 and Meta Graph v25.0. Credentials are sent to these destinations; use only trusted endpoints.
 
+Every change is also written as its own action record, so history is read from the database rather than inferred from the account's last hundred entries: creating, editing and deleting a workflow, saving colours or profile, configuring, verifying and disconnecting a provider, and signing up, in or out. `GET /api/account/actions?limit=50` returns the newest first, scoped to the signed-in account; `POST /api/account/actions` with `{ "type": "office.opened", "detail": "…", "data": {} }` records one from anywhere in the interface. Credentials never appear in a record.
+
+On Vercel, `api/account/[[...path]].mjs` publishes the member API as a function. It needs `DELUX_MONGODB_URI` and `DELUX_PROVIDER_KEY` in the project's environment; without them it answers `503 The member database is not connected to this deployment yet.` rather than accepting accounts it cannot keep. Local `npm start` still prefers the JSON file until a URI is set.
+
 Run `npm test` for account isolation, sessions, persistence, validation, provider verification contracts and custom-color text contrast. These tests use temporary data and synthetic credentials; they do not contact providers.
 
 ## First five minutes in the 3D office

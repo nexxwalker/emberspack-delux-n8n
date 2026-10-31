@@ -38,6 +38,11 @@ function theme(value) {
   return { accent: value.accent.toLowerCase(), background: value.background.toLowerCase() };
 }
 async function readBody(req) {
+  // Serverless runtimes hand over a parsed body and an already-drained stream.
+  if (req.body && typeof req.body === 'object' && !Buffer.isBuffer(req.body)) {
+    if (Array.isArray(req.body)) fail(400, 'Invalid request.');
+    return req.body;
+  }
   if (!req.headers['content-type']?.startsWith('application/json')) fail(415, 'Use JSON for this request.');
   let text = '';
   let bytes = 0;
@@ -138,6 +143,20 @@ export function createAccounts({
     user.activity.unshift({ id: randomUUID(), text, at: new Date().toISOString() });
     user.activity = user.activity.slice(0, 100);
   };
+  // Every change is also its own record, so the history can be read back from the
+  // database instead of being inferred from the account's last hundred entries.
+  async function recordAction(user, type, detail, extra) {
+    const entry = {
+      id: randomUUID(),
+      user,
+      type,
+      detail: detail || '',
+      at: new Date().toISOString(),
+      data: extra && typeof extra === 'object' ? extra : {},
+    };
+    await store.appendAction(entry);
+    return entry;
+  }
   function tokenOf(req) {
     return (
       (req.headers.cookie || '')
@@ -154,7 +173,7 @@ export function createAccounts({
     return session && data.users.find((u) => u.id === session.user);
   }
   function cookie(req, res, token, maxAge) {
-    const secure = req.socket.encrypted || publicOrigin.startsWith('https://');
+    const secure = req.socket?.encrypted || publicOrigin.startsWith('https://');
     res.setHeader(
       'set-cookie',
       `delux_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAge}${secure ? '; Secure' : ''}`,
@@ -228,7 +247,9 @@ export function createAccounts({
         }
       }
       if (req.method === 'POST' && ['signup', 'login'].includes(route)) {
-        rate('auth:' + req.socket.remoteAddress);
+        rate(
+          'auth:' + (req.socket?.remoteAddress || req.headers['x-forwarded-for']?.split(',')[0].trim() || 'unknown'),
+        );
         const b = await readBody(req);
         const email = field(b.email, 'email', 254).toLowerCase();
         if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) fail(400, 'Enter a valid email address.');
@@ -265,6 +286,7 @@ export function createAccounts({
             if (e?.code === 11000) fail(409, 'An account already uses this email. Sign in instead.');
             throw e;
           }
+          await recordAction(user.id, 'account.created', 'Workspace created');
           send(res, 201, { user: publicUser(user) });
           return true;
         }
@@ -281,6 +303,7 @@ export function createAccounts({
           latest,
           latest.users.find((u) => u.id === user.id),
         );
+        await recordAction(user.id, 'account.login', 'Signed in');
         send(res, 200, { user: publicUser(latest.users.find((u) => u.id === user.id)) });
         return true;
       }
@@ -291,9 +314,27 @@ export function createAccounts({
         send(res, 200, { user: publicUser(user) });
         return true;
       }
+      if (route === 'actions' && req.method === 'GET') {
+        const asked = Number(url.searchParams.get('limit'));
+        const limit = Number.isInteger(asked) ? Math.min(200, Math.max(1, asked)) : 50;
+        send(res, 200, { actions: await store.readActions(user.id, limit) });
+        return true;
+      }
+      if (route === 'actions' && req.method === 'POST') {
+        const b = await readBody(req);
+        const entry = await recordAction(
+          user.id,
+          field(b.type, 'action type', 60),
+          field(b.detail ?? '', 'detail', 500, false),
+          b.data,
+        );
+        send(res, 201, { action: entry });
+        return true;
+      }
       if (route === 'logout' && req.method === 'POST') {
         data.sessions = data.sessions.filter((s) => s.token !== hash(tokenOf(req)));
         await write(data);
+        await recordAction(user.id, 'account.logout', 'Signed out');
         cookie(req, res, '', 0);
         send(res, 200, { ok: true });
         return true;
@@ -306,6 +347,7 @@ export function createAccounts({
         const u = latest.users.find((u) => u.id === user.id);
         Object.assign(u, { name, workspace });
         await write(latest);
+        await recordAction(user.id, 'profile.updated', `${name} · ${workspace}`);
         send(res, 200, { user: publicUser(u) });
         return true;
       }
@@ -315,6 +357,7 @@ export function createAccounts({
           u = latest.users.find((u) => u.id === user.id);
         u.theme = colors;
         await write(latest);
+        await recordAction(user.id, 'theme.updated', 'Saved colours', colors);
         send(res, 200, { user: publicUser(u) });
         return true;
       }
@@ -363,6 +406,12 @@ export function createAccounts({
         });
         activity(u, `${isNew ? 'Created' : 'Updated'} “${title}” · ${b.stage}`);
         await write(latest);
+        await recordAction(user.id, isNew ? 'workflow.created' : 'workflow.updated', `${title} · ${b.stage}`, {
+          workflow: workflow.id,
+          stage: b.stage,
+          department: b.department,
+          provider: b.provider,
+        });
         send(res, isNew ? 201 : 200, { workflow });
         return true;
       }
@@ -372,6 +421,7 @@ export function createAccounts({
         user.workflows = user.workflows.filter((w) => w.id !== workflowId);
         activity(user, `Deleted “${workflow.title}”`);
         await write(data);
+        await recordAction(user.id, 'workflow.deleted', workflow.title, { workflow: workflowId });
         send(res, 200, { ok: true });
         return true;
       }
@@ -382,6 +432,7 @@ export function createAccounts({
           delete user.providers[id];
           activity(user, `Disconnected ${id}`);
           await write(data);
+          await recordAction(user.id, 'provider.disconnected', id, { provider: id });
           send(res, 200, { user: publicUser(user) });
           return true;
         }
@@ -403,6 +454,7 @@ export function createAccounts({
           };
           activity(u, `Configured ${id}`);
           await write(latest);
+          await recordAction(user.id, 'provider.configured', id, { provider: id });
           send(res, 200, { user: publicUser(u) });
           return true;
         }
@@ -417,6 +469,7 @@ export function createAccounts({
             fail(409, 'Settings changed during verification. Verify again.');
           Object.assign(u.providers[id], result, { checkedAt: new Date().toISOString() });
           await write(latest);
+          await recordAction(user.id, 'provider.verified', result.detail, { provider: id, status: result.status });
           send(res, 200, { user: publicUser(u) });
           return true;
         }
